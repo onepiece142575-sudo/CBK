@@ -14,9 +14,9 @@
 #include "cbk/packer.h"
 #include "cbk/stage.h"
 #include "src/packers/native_packer.h"
+#include "src/packers/tar_packer.h"
 
 // 新增打包算法时在这里加 include：
-// #include "src/packers/tar_packer.h"      // 队友 A
 // #include "src/packers/cpio_packer.h"     // 队友 A
 
 // 新增 Stage 时在这里加 include：
@@ -31,7 +31,7 @@ void RegisterBuiltinPackers() {
     PackerRegistry& registry = PackerRegistry::Instance();
 
     registry.Register(kNativePackerName, [] { return std::make_unique<NativePacker>(); });
-    // registry.Register("tar",  [] { return std::make_unique<TarPacker>(); });
+    registry.Register("tar", [] { return std::make_unique<TarPacker>(); });
     // registry.Register("cpio", [] { return std::make_unique<CpioPacker>(); });
 }
 

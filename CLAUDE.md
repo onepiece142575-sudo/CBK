@@ -246,4 +246,13 @@ docs/                    需求 / 设计 / 测试三份文档
 
 <!-- 队友 A（打包解包 / 压缩解压）：在此追加 -->
 
+### 队友 A：tar 打包解包
+
+`TarPacker` 位于 `code/core/src/packers/tar_packer.*`，注册名为 `tar`。
+采用 ustar + 逐条目 PAX，完整 EntryMeta 放在 `CBK.meta` 扩展键；
+内容流式处理，文件实际长度必须等于声明长度，否则抛异常。
+测试在 `tar_packer_test.cpp`，外部兼容性检查用 `scripts/test_tar_compat.ps1`。
+实现范围、大小变化限制与演示方法见 [tar 开发说明](docs/tar开发说明.md)。
+cpio、Huffman、LZ77 尚未实现。
+
 <!-- 队友 B（加密解密 / 图形界面）：在此追加 -->
