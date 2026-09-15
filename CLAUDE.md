@@ -253,6 +253,9 @@ docs/                    需求 / 设计 / 测试三份文档
 内容流式处理，文件实际长度必须等于声明长度，否则抛异常。
 测试在 `tar_packer_test.cpp`，外部兼容性检查用 `scripts/test_tar_compat.ps1`。
 实现范围、大小变化限制与演示方法见 [tar 开发说明](docs/tar开发说明.md)。
-cpio、Huffman、LZ77 尚未实现。
+`CpioPacker` 位于 `code/core/src/packers/cpio_packer.*`，注册名为 `cpio`，
+采用 SVR4 newc 和逐条目元数据辅助记录。单文件上限、保留命名空间、
+硬链接计数策略及验证方法见 [CPIO 格式说明](docs/cpio格式说明.md)。
+Huffman、LZ77 尚未实现。
 
 <!-- 队友 B（加密解密 / 图形界面）：在此追加 -->

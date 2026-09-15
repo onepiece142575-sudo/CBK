@@ -34,6 +34,7 @@ add_executable(cbk_tests
     unit/entry_codec_test.cpp
     unit/packer_roundtrip_test.cpp
     unit/tar_packer_test.cpp
+    unit/cpio_packer_test.cpp
     unit/archive_test.cpp
     unit/scanner_test.cpp
     unit/metadata_test.cpp
