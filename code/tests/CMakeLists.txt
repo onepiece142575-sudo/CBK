@@ -36,6 +36,7 @@ add_executable(cbk_tests
     unit/tar_packer_test.cpp
     unit/cpio_packer_test.cpp
     unit/huffman_stage_test.cpp
+    unit/lz77_stage_test.cpp
     unit/archive_test.cpp
     unit/scanner_test.cpp
     unit/metadata_test.cpp

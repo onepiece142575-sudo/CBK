@@ -258,6 +258,9 @@ docs/                    需求 / 设计 / 测试三份文档
 硬链接计数策略及验证方法见 [CPIO 格式说明](docs/cpio格式说明.md)。
 `HuffmanStageFactory` 位于 `code/core/src/stages/huffman_stage.*`，注册名 `huffman`。
 采用 64 KB 分块 Huffman、频率表序列化、原样回退及逐块 CRC32；支持流式压缩和解压。
-格式与验证范围见 [Huffman 格式说明](docs/huffman格式说明.md)。LZ77 尚未实现。
+格式与验证范围见 [Huffman 格式说明](docs/huffman格式说明.md)。
+`Lz77StageFactory` 位于 `code/core/src/stages/lz77_stage.*`，注册名 `lz77`。
+采用 64 KB 独立块、32 KB 窗口及 LZSS token；支持原样回退和逐块 CRC32。
+格式、搜索上限及组合能力见 [LZ77 格式说明](docs/lz77格式说明.md)。
 
 <!-- 队友 B（加密解密 / 图形界面）：在此追加 -->
