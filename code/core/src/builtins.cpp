@@ -16,9 +16,9 @@
 #include "src/packers/cpio_packer.h"
 #include "src/packers/native_packer.h"
 #include "src/packers/tar_packer.h"
+#include "src/stages/huffman_stage.h"
 
 // 新增 Stage 时在这里加 include：
-// #include "stages/huffman_stage.h"    // 队友 A
 // #include "stages/lz77_stage.h"       // 队友 A
 // #include "stages/xor_stage.h"        // 队友 B
 // #include "stages/aes_stage.h"        // 队友 B
@@ -35,9 +35,7 @@ void RegisterBuiltinPackers() {
 
 void RegisterBuiltinStages() {
     StageRegistry& registry = StageRegistry::Instance();
-    (void)registry;  // 同上
-
-    // registry.Register(std::make_unique<HuffmanStageFactory>());
+    registry.Register(std::make_unique<HuffmanStageFactory>());
     // registry.Register(std::make_unique<Lz77StageFactory>());
     // registry.Register(std::make_unique<XorStageFactory>());
     // registry.Register(std::make_unique<AesStageFactory>());

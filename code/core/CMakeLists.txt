@@ -25,7 +25,7 @@ add_library(cbk_core STATIC
     # —— 队友 A：打包 / 压缩 ——
     src/packers/tar_packer.cpp
     src/packers/cpio_packer.cpp
-    # src/stages/huffman_stage.cpp
+    src/stages/huffman_stage.cpp
     # src/stages/lz77_stage.cpp
 
     # —— 队友 B：加密 ——
