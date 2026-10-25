@@ -19,6 +19,7 @@
 #include "cbk/stage.h"
 #include "cbk/text.h"
 #include "cbk/types.h"
+#include "src/archive.h"
 #include "src/metadata.h"
 #include "src/platform_win.h"
 #include "unit/temp_dir.h"
@@ -536,6 +537,36 @@ TEST(Engine, BackupCannotOverwriteItsSourceFile) {
     const auto options = BackupTo(temp.At(L"src"), temp.At(L"src\\file"));
     EXPECT_EQ(cbk::Status::kBadArgs, cbk::RunBackup(options, nullptr).status);
     EXPECT_EQ("source content", temp.ReadFile(L"src\\file"));
+}
+
+TEST(Engine, DataEntryCannotEscapeTheValidatedIndex) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    cbk::EntryMeta safe;
+    safe.id = 0;
+    safe.type = cbk::FileType::kRegular;
+    safe.relative_path = L"safe";
+    auto unsafe = safe;
+    unsafe.relative_path = L"..\\outside";
+    const auto archive = temp.At(L"mismatch.cbk");
+    cbk::ArchiveWriter writer;
+    cbk::PipelineDesc pipeline;
+    pipeline.packer = "cbk-native";
+    std::wstring error;
+    ASSERT_EQ(cbk::Status::kOk, writer.Open(archive, temp.At(L""), pipeline, &error));
+    auto packer = cbk::PackerRegistry::Instance().Create("cbk-native");
+    packer->BeginEntry(unsafe, writer.DataSink());
+    packer->EndEntry(writer.DataSink());
+    packer->Finish(writer.DataSink());
+    writer.EndData();
+    cbk::WriteIndex({safe}, writer.IndexSink());
+    ASSERT_EQ(cbk::Status::kOk, writer.Close(1, 0, &error));
+    cbk::RestoreOptions restore;
+    restore.archive = archive;
+    restore.dest_root = temp.At(L"dest");
+    EXPECT_EQ(cbk::Status::kFailed, cbk::RunRestore(restore, nullptr).status);
+    EXPECT_EQ(INVALID_FILE_ATTRIBUTES,
+              GetFileAttributesW(pf::ToExtendedPath(temp.At(L"outside")).c_str()));
 }
 
 TEST(Engine, CancelledReplacementPreservesPreviousBackup) {

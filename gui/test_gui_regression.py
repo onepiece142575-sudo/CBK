@@ -221,7 +221,7 @@ class GuiRegression(unittest.TestCase):
 
     def test_backend_path_configuration(self):
         with patch.dict(os.environ, {"CBK_EXE": str(self.root / "missing.exe")}):
-            self.assertEqual(bridge._find_cbk_exe(), str(self.root / "missing.exe"))
+            self.assertEqual(bridge._find_cbk_exe(), str((self.root / "missing.exe").resolve()))
 
 
 if __name__ == "__main__":

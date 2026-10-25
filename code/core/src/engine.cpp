@@ -295,7 +295,11 @@ public:
         current_ = meta;
         if (index_ != nullptr) {
             const auto it = index_->find(meta.id);
-            if (it != index_->end()) current_ = *it->second;
+            if (it == index_->end() || it->second->relative_path != meta.relative_path ||
+                it->second->type != meta.type) {
+                throw std::runtime_error("archive data entry does not match its index");
+            }
+            current_ = *it->second;
         }
         has_current_ = true;
         writing_ = false;
