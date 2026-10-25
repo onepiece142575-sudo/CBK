@@ -9,12 +9,17 @@
 #include <vector>
 
 #include "cbk/sink.h"
+#include "cbk/types.h"
+#include "src/stages/password_digest.h"
 
 namespace cbk {
 
 XorCbcStage::XorCbcStage(bool inverse) : inverse_(inverse) {
     key_block_.assign(kBlockSize, 0);
     prev_block_.assign(kBlockSize, 0);
+    buffer_.reserve(kBlockSize);
+    plain_out_buffer_.reserve(kBlockSize);
+    output_.reserve(kIoBlockSize);
 }
 
 std::string XorCbcStage::Name() const {
@@ -23,7 +28,11 @@ std::string XorCbcStage::Name() const {
 
 void XorCbcStage::SetPassword(const std::string& password) {
     if (password.empty()) {
-        std::fill(key_block_.begin(), key_block_.end(), 0);
+        std::fill(key_block_.begin(), key_block_.end(), uint8_t{0});
+    } else if (password.size() > kBlockSize) {
+        // Preserve legacy short-password keys; hash all bytes of longer passwords.
+        const auto digest = PasswordDigest(password);
+        std::copy_n(digest.begin(), kBlockSize, key_block_.begin());
     } else {
         for (size_t i = 0; i < kBlockSize; ++i) {
             key_block_[i] = static_cast<uint8_t>(password[i % password.size()]);
@@ -46,48 +55,52 @@ void XorCbcStage::Process(const uint8_t* data, size_t len, ISink& out) {
         wrote_iv_ = true;
     }
 
-    // if inverse and IV not read yet, buffer until we have IV
-    if (!wrote_iv_ && inverse_) {
-        if (len > 0) buffer_.insert(buffer_.end(), data, data + len);
-        if (buffer_.size() >= kBlockSize) {
-            std::copy(buffer_.begin(), buffer_.begin() + kBlockSize, prev_block_.begin());
-            std::vector<uint8_t> tail(buffer_.begin() + kBlockSize, buffer_.end());
-            buffer_.swap(tail);
-            wrote_iv_ = true;
-        }
-        if (!wrote_iv_) return;
-        len = 0;  // 本次输入已进入 buffer_，继续处理 IV 后的密文，不重复追加。
-    }
-
-    if (len > 0) buffer_.insert(buffer_.end(), data, data + len);
-
-    while (buffer_.size() >= kBlockSize) {
-        uint8_t in_block[kBlockSize];
-        uint8_t out_block[kBlockSize];
-        std::memcpy(in_block, buffer_.data(), kBlockSize);
-
-        if (!inverse_) {
-            uint8_t temp[kBlockSize];
-            for (size_t i = 0; i < kBlockSize; ++i)
-                temp[i] = static_cast<uint8_t>(in_block[i] ^ key_block_[i]);
-            XorBlock(out_block, temp, prev_block_.data());
-            out.Write(out_block, kBlockSize);
-            std::copy(out_block, out_block + kBlockSize, prev_block_.begin());
+    // Only retain an incomplete block. Full blocks are consumed directly from input;
+    // erasing 16 bytes repeatedly from a 64 KB vector would move ~128 MB per call.
+    while (len != 0) {
+        if (!buffer_.empty() || len < kBlockSize) {
+            const size_t count = std::min(len, kBlockSize - buffer_.size());
+            buffer_.insert(buffer_.end(), data, data + count);
+            data += count;
+            len -= count;
+            if (buffer_.size() < kBlockSize) break;
+            ProcessBlock(buffer_.data(), out);
+            buffer_.clear();
         } else {
-            uint8_t temp[kBlockSize];
-            XorBlock(temp, in_block, prev_block_.data());
-            for (size_t i = 0; i < kBlockSize; ++i)
-                out_block[i] = static_cast<uint8_t>(temp[i] ^ key_block_[i]);
-            // 只保留最后一个明文块用于去填充；前一块现在可以流式交付下游。
-            if (!plain_out_buffer_.empty()) {
-                out.Write(plain_out_buffer_.data(), plain_out_buffer_.size());
-            }
-            plain_out_buffer_.assign(out_block, out_block + kBlockSize);
-            std::copy(in_block, in_block + kBlockSize, prev_block_.begin());
+            ProcessBlock(data, out);
+            data += kBlockSize;
+            len -= kBlockSize;
         }
-
-        buffer_.erase(buffer_.begin(), buffer_.begin() + kBlockSize);
     }
+    FlushOutput(out);
+}
+
+void XorCbcStage::FlushOutput(ISink& out) {
+    if (output_.empty()) return;
+    out.Write(output_.data(), output_.size());
+    output_.clear();
+}
+
+void XorCbcStage::ProcessBlock(const uint8_t* data, ISink& out) {
+    if (inverse_ && !wrote_iv_) {
+        std::copy(data, data + kBlockSize, prev_block_.begin());
+        wrote_iv_ = true;
+        return;
+    }
+    uint8_t block[kBlockSize];
+    for (size_t i = 0; i < kBlockSize; ++i) {
+        block[i] = static_cast<uint8_t>(data[i] ^ key_block_[i] ^ prev_block_[i]);
+    }
+    if (inverse_) {
+        // Retain exactly one plaintext block until Finish validates its padding.
+        output_.insert(output_.end(), plain_out_buffer_.begin(), plain_out_buffer_.end());
+        plain_out_buffer_.assign(block, block + kBlockSize);
+        std::copy(data, data + kBlockSize, prev_block_.begin());
+    } else {
+        output_.insert(output_.end(), block, block + kBlockSize);
+        std::copy(block, block + kBlockSize, prev_block_.begin());
+    }
+    if (output_.size() == kIoBlockSize) FlushOutput(out);
 }
 
 void XorCbcStage::Finish(ISink& out) {

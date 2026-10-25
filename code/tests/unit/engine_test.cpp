@@ -19,6 +19,7 @@
 #include "cbk/stage.h"
 #include "cbk/text.h"
 #include "cbk/types.h"
+#include "src/archive.h"
 #include "src/metadata.h"
 #include "src/platform_win.h"
 #include "unit/temp_dir.h"
@@ -498,6 +499,95 @@ TEST(Engine, CancellationStopsAndDeletesHalfWrittenArchive) {
     // 半成品必须删掉：一个残缺的 .cbk 比没有文件更糟，它看着像个能用的备份。
     EXPECT_EQ(INVALID_FILE_ATTRIBUTES, GetFileAttributesW(pf::ToExtendedPath(archive).c_str()))
         << "取消之后半成品还留在盘上";
+}
+
+TEST(Engine, EncryptedBackupWithoutPasswordPreservesDestination) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    temp.MakeFile(L"src\\file", "content");
+    for (const std::string cipher : {"xor", "vigenere", "xor-cbc"}) {
+        temp.MakeFile(L"old.cbk", "old backup");
+        auto options = BackupTo(temp.At(L"src"), temp.At(L"old.cbk"));
+        options.stages = {cipher};
+        EXPECT_EQ(cbk::Status::kBadArgs, cbk::RunBackup(options, nullptr).status);
+        EXPECT_EQ("old backup", temp.ReadFile(L"old.cbk"));
+    }
+}
+
+TEST(Engine, ExistingFileIsNotARestoreDirectory) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    const auto backup = BackupTo(temp.At(L"src"), temp.At(L"empty.cbk"));
+    ASSERT_EQ(cbk::Status::kOk, cbk::RunBackup(backup, nullptr).status);
+    temp.MakeFile(L"target", "keep me");
+    cbk::RestoreOptions restore;
+    restore.archive = temp.At(L"empty.cbk");
+    restore.dest_root = temp.At(L"target");
+    EXPECT_EQ(cbk::Status::kFailed, cbk::RunRestore(restore, nullptr).status);
+    EXPECT_EQ("keep me", temp.ReadFile(L"target"));
+}
+
+TEST(Engine, BackupCannotOverwriteItsSourceFile) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    temp.MakeFile(L"src\\file", "source content");
+    const auto options = BackupTo(temp.At(L"src"), temp.At(L"src\\file"));
+    EXPECT_EQ(cbk::Status::kBadArgs, cbk::RunBackup(options, nullptr).status);
+    EXPECT_EQ("source content", temp.ReadFile(L"src\\file"));
+}
+
+TEST(Engine, DataEntryCannotEscapeTheValidatedIndex) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    cbk::EntryMeta safe;
+    safe.id = 0;
+    safe.type = cbk::FileType::kRegular;
+    safe.relative_path = L"safe";
+    auto unsafe = safe;
+    unsafe.relative_path = L"..\\outside";
+    const auto archive = temp.At(L"mismatch.cbk");
+    cbk::ArchiveWriter writer;
+    cbk::PipelineDesc pipeline;
+    pipeline.packer = "cbk-native";
+    std::wstring error;
+    ASSERT_EQ(cbk::Status::kOk, writer.Open(archive, temp.At(L""), pipeline, &error));
+    auto packer = cbk::PackerRegistry::Instance().Create("cbk-native");
+    packer->BeginEntry(unsafe, writer.DataSink());
+    packer->EndEntry(writer.DataSink());
+    packer->Finish(writer.DataSink());
+    writer.EndData();
+    cbk::WriteIndex({safe}, writer.IndexSink());
+    ASSERT_EQ(cbk::Status::kOk, writer.Close(1, 0, &error));
+    cbk::RestoreOptions restore;
+    restore.archive = archive;
+    restore.dest_root = temp.At(L"dest");
+    EXPECT_EQ(cbk::Status::kFailed, cbk::RunRestore(restore, nullptr).status);
+    EXPECT_EQ(INVALID_FILE_ATTRIBUTES,
+              GetFileAttributesW(pf::ToExtendedPath(temp.At(L"outside")).c_str()));
+}
+
+TEST(Engine, CancelledReplacementPreservesPreviousBackup) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    temp.MakeFile(L"src\\file", std::string(100000, 'x'));
+    temp.MakeFile(L"old.cbk", "old backup");
+    class CancelOnTransfer : public cbk::IProgressObserver {
+    public:
+        void OnProgress(const cbk::ProgressInfo&) override { cancelled_ = true; }
+        bool IsCancelled() override { return cancelled_; }
+
+    private:
+        bool cancelled_ = false;
+    } observer;
+    const auto options = BackupTo(temp.At(L"src"), temp.At(L"old.cbk"));
+    EXPECT_EQ(cbk::Status::kFailed, cbk::RunBackup(options, &observer).status);
+    EXPECT_EQ("old backup", temp.ReadFile(L"old.cbk"));
+    const auto partial = temp.At(L"old.cbk.partial-" + std::to_wstring(GetCurrentProcessId()));
+    EXPECT_EQ(INVALID_FILE_ATTRIBUTES, GetFileAttributesW(pf::ToExtendedPath(partial).c_str()));
 }
 
 }  // namespace

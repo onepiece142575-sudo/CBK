@@ -149,6 +149,7 @@ private:
 
     platform::ScopedHandle file_;
     std::wstring path_;
+    std::wstring destination_;
     Phase phase_ = Phase::kClosed;
 
     ArchiveHeader header_;

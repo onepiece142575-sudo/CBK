@@ -1,16 +1,19 @@
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "cbk/stage.h"
 #include "src/byte_io.h"
+#include "src/stages/password_digest.h"
 #include "src/stages/vigenere_stage.h"
 #include "src/stages/xor_cbc_stage.h"
 #include "src/stages/xor_stage.h"
@@ -114,4 +117,65 @@ TEST(Stages, CbcStreamsBeforeFinishAndRejectsTruncationAndBadPadding) {
     auto broken = factory.CreateInverse();
     broken->SetPassword("test");
     EXPECT_THROW(RunProcess(broken.get(), corrupt, 65536), std::runtime_error);
+}
+
+TEST(Stages, CbcDecryptsIndependentLegacyFixture) {
+    // Independent CBC recurrence with a fixed IV, including a full padding block.
+    const std::string password = "legacy-key";
+    std::vector<uint8_t> plain(65536);
+    for (size_t i = 0; i < plain.size(); ++i) plain[i] = static_cast<uint8_t>(i * 37);
+    auto padded = plain;
+    padded.insert(padded.end(), 16, uint8_t{16});
+    std::vector<uint8_t> ciphertext(16, uint8_t{73});
+    for (size_t offset = 0; offset < padded.size(); offset += 16) {
+        for (size_t i = 0; i < 16; ++i) {
+            ciphertext.push_back(static_cast<uint8_t>(
+                padded[offset + i] ^ password[i % password.size()] ^ ciphertext[offset + i]));
+        }
+    }
+    for (size_t chunk : {1u, 17u, 65536u, 100000u}) {
+        XorCbcStage decoder(true);
+        decoder.SetPassword(password);
+        EXPECT_EQ(plain, RunProcess(&decoder, ciphertext, chunk));
+    }
+}
+
+TEST(Stages, MissingPasswordDoesNotAccessInvalidMemory) {
+    VectorSink sink;
+    const uint8_t byte = 1;
+    XorStage xor_stage;
+    VigenereStage vigenere;
+    EXPECT_THROW(xor_stage.Process(&byte, 1, sink), std::runtime_error);
+    EXPECT_THROW(vigenere.Process(&byte, 1, sink), std::runtime_error);
+}
+
+TEST(Stages, CbcUsesPasswordSuffixBeyondSixteenBytes) {
+    const std::vector<uint8_t> plain(100, 42);
+    XorCbcStage encoder;
+    encoder.SetPassword("1234567890abcdef-correct");
+    const auto encrypted = RunProcess(&encoder, plain, 13);
+    XorCbcStage correct(true);
+    correct.SetPassword("1234567890abcdef-correct");
+    EXPECT_EQ(plain, RunProcess(&correct, encrypted, 11));
+    XorCbcStage wrong(true);
+    wrong.SetPassword("1234567890abcdef-wrong");
+    EXPECT_THROW(RunProcess(&wrong, encrypted, 11), std::runtime_error);
+}
+
+TEST(Stages, PasswordDigestMatchesKnownSha256Vectors) {
+    const std::vector<std::pair<std::string, std::string>> vectors = {
+        {"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+        {"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+        {"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"},
+        {std::string(1000000, 'a'),
+         "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"}};
+    for (const auto& item : vectors) {
+        std::string actual;
+        for (uint8_t byte : PasswordDigest(item.first)) {
+            actual += "0123456789abcdef"[byte >> 4];
+            actual += "0123456789abcdef"[byte & 15];
+        }
+        EXPECT_EQ(item.second, actual);
+    }
 }

@@ -81,6 +81,9 @@ public:
 
     virtual void OnStart(const StartInfo&) {}
     virtual void OnProgress(const ProgressInfo&) {}
+    /// 准备/收尾阶段进度，不改变 OnStart 的文件总量及 OnProgress 的传输语义。
+    /// phase 为 scan/read-index/prepare/finalize/metadata；总量为 0 时尚未知。
+    virtual void OnPhase(const std::string&, const ProgressInfo&) {}
     virtual void OnWarn(const WarnInfo&) {}
     virtual void OnResult(const ResultInfo&) {}
 

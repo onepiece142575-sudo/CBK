@@ -220,7 +220,7 @@ gui/                     Python + PySide6            ← 队友 B
 docs/                    需求 / 设计 / 测试三份文档
 ```
 
-`gui/core_bridge.py` 是**唯一**允许启动 `cbk.exe` 的 Python 文件。
+`gui/bridge.py` 是**唯一**允许启动 `cbk.exe` 的 Python 文件（原设计名 `core_bridge.py`）。
 这条规矩保证业务逻辑不会一点点渗进 Python 层（见约束 1）。
 
 ---

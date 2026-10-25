@@ -221,6 +221,24 @@ bool ReadIndex(ISource& source, uint64_t expected_count, std::vector<EntryMeta>*
             if (end_of_stream) break;
             return false;  // 记录损坏
         }
+        // An index is untrusted even when it decrypted successfully. Reject
+        // absolute paths, parent components, drive/stream names and embedded NULs
+        // before restore can create directories or open any output file.
+        const auto& path = entry.relative_path;
+        if (path.empty() || path.front() == L'\\' || path.front() == L'/' ||
+            path.find(L':') != std::wstring::npos || path.find(L'\0') != std::wstring::npos) {
+            return false;
+        }
+        size_t start = 0;
+        while (start < path.size()) {
+            const size_t end = path.find_first_of(L"\\/", start);
+            const auto component =
+                path.substr(start, end == std::wstring::npos ? end : end - start);
+            if (component.empty() || component == L"." || component == L"..") return false;
+            if (end == std::wstring::npos) break;
+            start = end + 1;
+        }
+        if (!entries.empty() && entry.id <= entries.back().id) return false;
         entries.push_back(std::move(entry));
         // 条数超了就别再读下去，防的是索引区被改坏成一个自增长的怪物。
         if (entries.size() > expected_count) return false;
@@ -292,7 +310,12 @@ Status ArchiveWriter::Open(const std::wstring& path, const std::wstring& source_
 
     pipeline_text_ = pipeline.Serialize();
 
-    file_ = platform::CreateForWrite(path);
+    // Write beside the destination, then publish only a complete archive. A failed
+    // or cancelled replacement must never truncate an existing usable backup.
+    destination_ = path;
+    const std::wstring temporary = path + L".partial-" + std::to_wstring(GetCurrentProcessId());
+    file_.Reset(CreateFileW(platform::ToExtendedPath(temporary).c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!file_.IsValid()) {
         path_.clear();  // 文件都没建出来，不该去删它
         if (error != nullptr) {
@@ -300,7 +323,7 @@ Status ArchiveWriter::Open(const std::wstring& path, const std::wstring& source_
         }
         return Status::kFailed;
     }
-    path_ = path;
+    path_ = temporary;
 
     header_ = ArchiveHeader();
     header_.created_at = NowAsFileTime();
@@ -420,6 +443,12 @@ Status ArchiveWriter::Close(uint64_t entry_count, uint64_t total_original_bytes,
 
     sink_.reset();
     file_.Reset();
+    if (!MoveFileExW(platform::ToExtendedPath(path_).c_str(),
+                     platform::ToExtendedPath(destination_).c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return Fail(L"无法保存完整备份，原有备份未改变", error);
+    }
+    path_.clear();
     phase_ = Phase::kDone;
     return Status::kOk;
 }

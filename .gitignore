@@ -23,6 +23,7 @@ CMakeUserPresets.json
 
 # ---- Python（GUI）----
 __pycache__/
+.ruff_cache/
 *.py[cod]
 .venv/
 venv/

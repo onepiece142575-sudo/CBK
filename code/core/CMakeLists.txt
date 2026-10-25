@@ -32,6 +32,7 @@ add_library(cbk_core STATIC
     src/stages/xor_stage.cpp
     src/stages/vigenere_stage.cpp
     src/stages/xor_cbc_stage.cpp
+    src/stages/password_digest.cpp
     # src/stages/aes_stage.cpp
 )
 

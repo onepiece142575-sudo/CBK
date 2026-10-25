@@ -155,6 +155,26 @@ TEST(Index, RejectsCountMismatch) {
     EXPECT_FALSE(cbk::ReadIndex(source, 5, &parsed));
 }
 
+TEST(Index, RejectsPathsOutsideDestinationAndDuplicateIds) {
+    for (const std::wstring path : {L"..\\outside", L"a\\..\\outside", L"C:\\outside", L"\\outside",
+                                    L"/outside", L"a:stream", L"a\\.\\b"}) {
+        auto entries = MakeEntries();
+        entries[0].relative_path = path;
+        cbk::VectorSink sink;
+        cbk::WriteIndex(entries, sink);
+        cbk::MemorySource source(sink.Buffer());
+        std::vector<cbk::EntryMeta> parsed;
+        EXPECT_FALSE(cbk::ReadIndex(source, entries.size(), &parsed));
+    }
+    auto entries = MakeEntries();
+    entries[1].id = entries[0].id;
+    cbk::VectorSink sink;
+    cbk::WriteIndex(entries, sink);
+    cbk::MemorySource source(sink.Buffer());
+    std::vector<cbk::EntryMeta> parsed;
+    EXPECT_FALSE(cbk::ReadIndex(source, entries.size(), &parsed));
+}
+
 TEST(Index, EmptyIndexIsValid) {
     cbk::VectorSink sink;
     cbk::WriteIndex({}, sink);

@@ -30,6 +30,10 @@ private:
     bool wrote_iv_ = false;
     bool inverse_ = false;
 
+    std::vector<uint8_t> output_;  // bounded batch of transformed blocks
+    void ProcessBlock(const uint8_t* data, ISink& out);
+    void FlushOutput(ISink& out);
+
     void XorBlock(uint8_t* out, const uint8_t* a, const uint8_t* b);
 };
 

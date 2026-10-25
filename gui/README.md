@@ -1,0 +1,49 @@
+# CBK 图形界面
+
+Python 3.10+，依赖 PySide6。备份、恢复、压缩、加密均由 C++ 后台执行。
+`bridge.py` 是界面唯一的进程入口，密码通过标准输入传递，不进入命令行或日志。
+原组内说明使用的 `core_bridge.py` 名称，在此以 `bridge.py` 实现。
+
+## 从源码运行
+
+在仓库根目录执行：
+
+```powershell
+python -m pip install -r gui/requirements.txt
+cmake --preset msvc -S code
+cmake --build code/build/msvc --config Release
+python gui/gui.py
+```
+
+后台查找顺序为：`CBK_EXE` 环境变量、与 `bridge.py` 同目录的 `cbk.exe`、
+本仓库 Release/Debug 构建目录、PATH。显式设置的 `CBK_EXE` 无效时直接报错，
+避免意外运行其他版本。可在窗口底部核对实际后台路径。
+
+GitHub Actions 的 `cbk-windows-x64` 产物包含 `cbk.exe`、界面和依赖清单。
+下载并解压后，安装依赖，再执行 `python gui.py`。
+
+## 操作与错误处理
+
+- 备份：选择源目录、输出文件、打包/压缩/加密算法，输入并确认密码。
+  输出必须位于源目录以外；替换已有备份需要确认。
+- 恢复：选择备份和目标目录；输入密码会自动启用密码选项。
+  可选择跳过、覆盖或重命名已有文件。
+- 查看/校验：查看加密归档需要密码；校验检查容器完整性，不验证密码和恢复结果。
+- 密码错误与部分归档损坏无法可靠区分，因此统一提示“密码错误或归档已损坏”。
+  失败后任务会结束，可直接修改密码重试。
+- 取消备份时删除临时文件并保留旧备份；取消恢复时保留已经恢复的部分。
+  GUI 管理的后台即使被强制终止，也会清理该进程的 `.partial-<pid>` 文件。
+  整个 GUI 被操作系统强制结束或断电时可能残留临时文件，但不会替换完整的旧备份。
+
+## 验证
+
+```powershell
+python -m unittest discover -s gui -p test_gui_regression.py -v
+python -m pip install ruff==0.17.2
+python -m ruff check gui
+python -m ruff format --check gui
+```
+
+测试使用临时目录和 Qt offscreen 模式，不弹出操作窗口，也不读写真实备份。
+覆盖 3 个打包器 × 3 个压缩选项 × 3 个加密算法，以及错误密码后重试、
+异常退出码、取消、强制终止、超时、无效路径和损坏归档。
