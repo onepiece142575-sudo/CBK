@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -104,21 +105,28 @@ public:
                  ",\"totalBytes\":" + std::to_string(info.total_bytes) + "}");
     }
 
-    void OnProgress(const cbk::ProgressInfo& info) override {
+    void OnProgress(const cbk::ProgressInfo& info) override { EmitProgress(info, "transfer"); }
+
+    void OnPhase(const std::string& phase, const cbk::ProgressInfo& info) override {
+        EmitProgress(info, phase);
+    }
+
+    void EmitProgress(const cbk::ProgressInfo& info, const std::string& phase) {
         if (!enabled_) return;
         // 节流在这一层做，不在 core 里。core 忠实上报每一块，
         // 但每行 JSON 都要 flush，一万个小文件全打出去会把 stdout 淹掉，
         // 界面忙着解析反而更卡。
         const ULONGLONG now = GetTickCount64();
         const bool finished = info.total_entries > 0 && info.done_entries >= info.total_entries;
-        if (!finished && now - last_emit_ms_ < kThrottleMs) return;
+        if (phase == last_phase_ && !finished && now - last_emit_ms_ < kThrottleMs) return;
         last_emit_ms_ = now;
+        last_phase_ = phase;
 
-        std::string line =
-            "{\"event\":\"progress\",\"doneEntries\":" + std::to_string(info.done_entries) +
-            ",\"totalEntries\":" + std::to_string(info.total_entries) +
-            ",\"doneBytes\":" + std::to_string(info.done_bytes) +
-            ",\"totalBytes\":" + std::to_string(info.total_bytes);
+        std::string line = "{\"event\":\"progress\",\"phase\":" + JsonQuote(phase) +
+                           ",\"doneEntries\":" + std::to_string(info.done_entries) +
+                           ",\"totalEntries\":" + std::to_string(info.total_entries) +
+                           ",\"doneBytes\":" + std::to_string(info.done_bytes) +
+                           ",\"totalBytes\":" + std::to_string(info.total_bytes);
         if (info.current != nullptr) {
             line += ",\"path\":" + JsonQuoteW(info.current->relative_path);
         }
@@ -150,6 +158,7 @@ private:
 
     bool enabled_;
     ULONGLONG last_emit_ms_ = 0;
+    std::string last_phase_;
 };
 
 // ============================================================ 参数解析
@@ -431,7 +440,7 @@ void PrintUsage() {
 
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
+int RunMain(int argc, wchar_t** argv) {
     // 控制台按 UTF-8 显示。管道给 GUI 时字节本来就是 UTF-8，
     // 这一行只影响人直接在终端里看的时候不至于是乱码。
     SetConsoleOutputCP(CP_UTF8);
@@ -469,4 +478,16 @@ int wmain(int argc, wchar_t** argv) {
     std::fwrite(message.data(), 1, message.size(), stderr);
     PrintUsage();
     return ToExitCode(cbk::Status::kBadArgs);
+}
+
+int wmain(int argc, wchar_t** argv) {
+    try {
+        return RunMain(argc, argv);
+    } catch (const std::exception& exc) {
+        std::fprintf(stderr, "cbk: operation failed: %s\n", exc.what());
+        return 2;
+    } catch (...) {
+        std::fprintf(stderr, "cbk: unexpected backend error\n");
+        return 2;
+    }
 }

@@ -292,7 +292,12 @@ Status ArchiveWriter::Open(const std::wstring& path, const std::wstring& source_
 
     pipeline_text_ = pipeline.Serialize();
 
-    file_ = platform::CreateForWrite(path);
+    // Write beside the destination, then publish only a complete archive. A failed
+    // or cancelled replacement must never truncate an existing usable backup.
+    destination_ = path;
+    const std::wstring temporary = path + L".partial-" + std::to_wstring(GetCurrentProcessId());
+    file_.Reset(CreateFileW(platform::ToExtendedPath(temporary).c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!file_.IsValid()) {
         path_.clear();  // 文件都没建出来，不该去删它
         if (error != nullptr) {
@@ -300,7 +305,7 @@ Status ArchiveWriter::Open(const std::wstring& path, const std::wstring& source_
         }
         return Status::kFailed;
     }
-    path_ = path;
+    path_ = temporary;
 
     header_ = ArchiveHeader();
     header_.created_at = NowAsFileTime();
@@ -420,6 +425,12 @@ Status ArchiveWriter::Close(uint64_t entry_count, uint64_t total_original_bytes,
 
     sink_.reset();
     file_.Reset();
+    if (!MoveFileExW(platform::ToExtendedPath(path_).c_str(),
+                     platform::ToExtendedPath(destination_).c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return Fail(L"无法保存完整备份，原有备份未改变", error);
+    }
+    path_.clear();
     phase_ = Phase::kDone;
     return Status::kOk;
 }

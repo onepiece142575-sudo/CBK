@@ -54,6 +54,29 @@ private:
     uint64_t count_ = 0;
 };
 
+/// 索引仍由 C++ 流式解码；向界面报告原始索引区的读取进度。
+class IndexProgressSource : public ISource {
+public:
+    IndexProgressSource(ISource* source, uint64_t total, IProgressObserver* observer)
+        : source_(source), observer_(observer) {
+        progress_.total_bytes = total;
+        if (observer_) observer_->OnPhase("read-index", progress_);
+    }
+
+    size_t Read(uint8_t* data, size_t len) override {
+        if (observer_ && observer_->IsCancelled()) return 0;
+        const size_t got = source_->Read(data, len);
+        progress_.done_bytes += got;
+        if (got && observer_) observer_->OnPhase("read-index", progress_);
+        return got;
+    }
+
+private:
+    ISource* source_;
+    IProgressObserver* observer_;
+    ProgressInfo progress_;
+};
+
 /// 硬链接的身份。同一个文件实体的多个目录项，这三个值完全相同。
 ///
 /// 来自 GetFileInformationByHandle。硬链接不能跨卷，所以卷序列号也必须
@@ -119,6 +142,10 @@ bool BuildStages(const std::vector<std::string>& names, bool inverse, const std:
             inverse ? factory->CreateInverse() : factory->CreateForward();
         if (stage == nullptr) {
             *error = L"算法 " + FromUtf8(name) + L" 创建失败";
+            return false;
+        }
+        if (factory->Kind() == StageKind::kEncrypt && password.empty()) {
+            *error = L"此操作需要密码，请填写归档密码";
             return false;
         }
         if (!password.empty()) stage->SetPassword(password);
@@ -215,7 +242,14 @@ bool EnsureDirectory(const std::wstring& path, uint32_t* win_error) {
     const std::wstring extended = platform::ToExtendedPath(path);
     if (CreateDirectoryW(extended.c_str(), nullptr) != 0) return true;
     const DWORD error = GetLastError();
-    if (error == ERROR_ALREADY_EXISTS) return true;
+    if (error == ERROR_ALREADY_EXISTS) {
+        const DWORD attributes = GetFileAttributesW(extended.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            return true;
+        }
+        if (win_error != nullptr) *win_error = ERROR_DIRECTORY;
+        return false;
+    }
     if (win_error != nullptr) *win_error = error;
     return false;
 }
@@ -518,6 +552,11 @@ EngineResult RunBackup(const BackupOptions& options, IProgressObserver* observer
                                           L" 的打包算法。用 cbk info 看看支持哪些。");
     }
     for (const std::string& name : options.stages) {
+        const auto* factory = StageRegistry::Instance().Find(name);
+        if (factory != nullptr && factory->Kind() == StageKind::kEncrypt &&
+            options.password.empty()) {
+            return Fail(Status::kBadArgs, L"加密备份必须填写非空密码");
+        }
         if (!StageRegistry::Instance().Has(name)) {
             return Fail(Status::kBadArgs,
                         L"没有名为 " + FromUtf8(name) + L" 的算法。用 cbk info 看看支持哪些。");
@@ -532,16 +571,37 @@ EngineResult RunBackup(const BackupOptions& options, IProgressObserver* observer
     EngineResult result;
 
     // 拿不到特权不是致命错误，降级跑就是了——只是遇到没权限的文件会跳过。
+    if (observer != nullptr) observer->OnPhase("scan", ProgressInfo{});
     platform::EnableBackupPrivileges();
 
     // ---- 遍历 ----
     const std::wstring root = platform::NormalizePath(options.source_root);
+    const std::wstring source_path = platform::ToExtendedPath(root);
+    const std::wstring destination = platform::ToExtendedPath(options.dest_archive);
+    const std::wstring prefix = source_path + (source_path.back() == L'\\' ? L"" : L"\\");
+    const bool same_path =
+        CompareStringOrdinal(source_path.c_str(), -1, destination.c_str(), -1, TRUE) == CSTR_EQUAL;
+    const bool inside_source =
+        destination.size() >= prefix.size() &&
+        CompareStringOrdinal(prefix.c_str(), static_cast<int>(prefix.size()), destination.c_str(),
+                             static_cast<int>(prefix.size()), TRUE) == CSTR_EQUAL;
+    if (same_path || inside_source) {
+        return Fail(Status::kBadArgs, L"备份文件必须保存在源目录以外");
+    }
     std::vector<EntryMeta> entries;
     ScanStats stats;
+    ProgressInfo scan_progress;
     {
         Scanner scanner(root, ScanOptions{options.follow_symlinks}, observer);
-        const Status scan_status =
-            scanner.Scan([&entries](const EntryMeta& meta) { entries.push_back(meta); }, &stats);
+        const Status scan_status = scanner.Scan(
+            [&](const EntryMeta& meta) {
+                entries.push_back(meta);
+                ++scan_progress.done_entries;
+                scan_progress.done_bytes += meta.original_size;
+                scan_progress.current = &meta;
+                if (observer != nullptr) observer->OnPhase("scan", scan_progress);
+            },
+            &stats);
         if (scan_status == Status::kFailed) {
             if (IsCancelled(observer)) return Fail(Status::kFailed, L"已取消");
             return Fail(Status::kFailed, L"无法遍历源目录 " + root);
@@ -684,6 +744,7 @@ EngineResult RunBackup(const BackupOptions& options, IProgressObserver* observer
             ++result.entries_done;
         }
 
+        if (observer != nullptr) observer->OnPhase("finalize", ProgressInfo{});
         packer->Finish(counter);
         chain.Finish();
         writer.EndData();
@@ -731,6 +792,7 @@ EngineResult RunRestore(const RestoreOptions& options, IProgressObserver* observ
         return Fail(Status::kBadArgs, L"--archive 和 --dest 都不能为空");
     }
 
+    if (observer != nullptr) observer->OnPhase("read-index", ProgressInfo{});
     std::wstring error;
     ArchiveReader reader;
     if (reader.Open(options.archive, &error) != Status::kOk) {
@@ -753,8 +815,16 @@ EngineResult RunRestore(const RestoreOptions& options, IProgressObserver* observ
         if (!BuildStages(header.pipeline.stages, true, options.password, &stages, &error)) {
             return Fail(Status::kFailed, error);
         }
-        StageChainSource chain(raw.get(), std::move(stages));
-        if (!ReadIndex(chain, header.entry_count, &entries)) {
+        IndexProgressSource index_progress(raw.get(), header.index_size, observer);
+        StageChainSource chain(&index_progress, std::move(stages));
+        bool index_ok = false;
+        try {
+            index_ok = ReadIndex(chain, header.entry_count, &entries);
+        } catch (const std::exception&) {
+            return Fail(Status::kFailed, L"密码错误或归档已损坏，无法读取索引");
+        }
+        if (!index_ok) {
+            if (IsCancelled(observer)) return Fail(Status::kFailed, L"已取消");
             return Fail(Status::kFailed, L"索引区解析失败，容器已损坏或密码不对");
         }
     }
@@ -779,7 +849,14 @@ EngineResult RunRestore(const RestoreOptions& options, IProgressObserver* observ
     // 条目是按 id 升序排的，而 Scanner 保证父目录的 id 更小，
     // 所以顺着建下去父目录一定已经存在。
     std::vector<const EntryMeta*> directories;
+    ProgressInfo preparation;
+    preparation.total_entries = entries.size();
+    if (observer != nullptr) observer->OnPhase("prepare", preparation);
     for (const EntryMeta& entry : entries) {
+        if (IsCancelled(observer)) return Fail(Status::kFailed, L"已取消");
+        preparation.current = &entry;
+        ++preparation.done_entries;
+        if (observer != nullptr) observer->OnPhase("prepare", preparation);
         if (entry.type != FileType::kDirectory) continue;
         const std::wstring absolute = platform::JoinPath(dest, entry.relative_path);
         if (!EnsureDirectory(absolute, &win_error)) {
@@ -825,9 +902,15 @@ EngineResult RunRestore(const RestoreOptions& options, IProgressObserver* observ
     // 逆序是因为从最深的往外设，设完父目录就不会再有人去动它的子目录，
     // 父目录的时间戳才不会被二次刷新。
     if (options.restore_metadata) {
+        ProgressInfo metadata_progress;
+        metadata_progress.total_entries = directories.size();
         for (size_t i = directories.size(); i > 0; --i) {
+            if (IsCancelled(observer)) return Fail(Status::kFailed, L"已取消");
             const EntryMeta& entry = *directories[i - 1];
             ApplyEntryMetadata(platform::JoinPath(dest, entry.relative_path), entry, observer);
+            metadata_progress.current = &entry;
+            ++metadata_progress.done_entries;
+            if (observer != nullptr) observer->OnPhase("metadata", metadata_progress);
         }
     }
 
@@ -871,7 +954,14 @@ Status ReadArchiveListing(const std::wstring& path, const std::string& password,
         return Status::kFailed;
     }
     StageChainSource chain(raw.get(), std::move(stages));
-    if (!ReadIndex(chain, header.entry_count, entries)) {
+    bool index_ok = false;
+    try {
+        index_ok = ReadIndex(chain, header.entry_count, entries);
+    } catch (const std::exception&) {
+        *error = L"密码错误或归档已损坏，无法读取索引";
+        return Status::kFailed;
+    }
+    if (!index_ok) {
         *error = L"索引区解析失败，容器已损坏或密码不对";
         return Status::kFailed;
     }

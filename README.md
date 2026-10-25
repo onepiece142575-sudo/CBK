@@ -24,14 +24,27 @@ ctest --preset release           # 跑单元测试
 最后一条应该输出一行 JSON：
 
 ```json
-{"formatVersion":1,"packers":[],"compressors":[],"ciphers":[]}
+{"formatVersion":1,"packers":["cbk-native","cpio","tar"],"compressors":["huffman","lz77"],"ciphers":["vigenere","xor","xor-cbc"]}
 ```
 
-列表现在是空的——算法还没实现。这条命令就是给 GUI 用的：
+这条命令也用于 GUI：
 界面启动时问一次核心支持哪些算法，用返回的列表填下拉框，
 所以新增算法界面一行代码都不用改。
 
 Debug 版把 `release` 换成 `debug`。
+
+### 图形界面
+
+在仓库根目录安装依赖并启动：
+
+```powershell
+python -m pip install -r gui/requirements.txt
+python gui/gui.py
+```
+
+界面会自动查找本仓库构建的 `cbk.exe`，也可通过 `CBK_EXE` 环境变量指定。
+运行与测试说明见 [GUI 使用说明](gui/README.md)，加密兼容范围见
+[GUI 与加密验收](docs/gui与加密验收.md)。
 
 ## 目录
 

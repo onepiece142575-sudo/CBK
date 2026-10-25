@@ -500,4 +500,63 @@ TEST(Engine, CancellationStopsAndDeletesHalfWrittenArchive) {
         << "取消之后半成品还留在盘上";
 }
 
+TEST(Engine, EncryptedBackupWithoutPasswordPreservesDestination) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    temp.MakeFile(L"src\\file", "content");
+    for (const std::string cipher : {"xor", "vigenere", "xor-cbc"}) {
+        temp.MakeFile(L"old.cbk", "old backup");
+        auto options = BackupTo(temp.At(L"src"), temp.At(L"old.cbk"));
+        options.stages = {cipher};
+        EXPECT_EQ(cbk::Status::kBadArgs, cbk::RunBackup(options, nullptr).status);
+        EXPECT_EQ("old backup", temp.ReadFile(L"old.cbk"));
+    }
+}
+
+TEST(Engine, ExistingFileIsNotARestoreDirectory) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    const auto backup = BackupTo(temp.At(L"src"), temp.At(L"empty.cbk"));
+    ASSERT_EQ(cbk::Status::kOk, cbk::RunBackup(backup, nullptr).status);
+    temp.MakeFile(L"target", "keep me");
+    cbk::RestoreOptions restore;
+    restore.archive = temp.At(L"empty.cbk");
+    restore.dest_root = temp.At(L"target");
+    EXPECT_EQ(cbk::Status::kFailed, cbk::RunRestore(restore, nullptr).status);
+    EXPECT_EQ("keep me", temp.ReadFile(L"target"));
+}
+
+TEST(Engine, BackupCannotOverwriteItsSourceFile) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    temp.MakeFile(L"src\\file", "source content");
+    const auto options = BackupTo(temp.At(L"src"), temp.At(L"src\\file"));
+    EXPECT_EQ(cbk::Status::kBadArgs, cbk::RunBackup(options, nullptr).status);
+    EXPECT_EQ("source content", temp.ReadFile(L"src\\file"));
+}
+
+TEST(Engine, CancelledReplacementPreservesPreviousBackup) {
+    EnsureRegistered();
+    cbk_test::TempDir temp;
+    temp.MakeDir(L"src");
+    temp.MakeFile(L"src\\file", std::string(100000, 'x'));
+    temp.MakeFile(L"old.cbk", "old backup");
+    class CancelOnTransfer : public cbk::IProgressObserver {
+    public:
+        void OnProgress(const cbk::ProgressInfo&) override { cancelled_ = true; }
+        bool IsCancelled() override { return cancelled_; }
+
+    private:
+        bool cancelled_ = false;
+    } observer;
+    const auto options = BackupTo(temp.At(L"src"), temp.At(L"old.cbk"));
+    EXPECT_EQ(cbk::Status::kFailed, cbk::RunBackup(options, &observer).status);
+    EXPECT_EQ("old backup", temp.ReadFile(L"old.cbk"));
+    const auto partial = temp.At(L"old.cbk.partial-" + std::to_wstring(GetCurrentProcessId()));
+    EXPECT_EQ(INVALID_FILE_ATTRIBUTES, GetFileAttributesW(pf::ToExtendedPath(partial).c_str()));
+}
+
 }  // namespace
